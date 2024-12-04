@@ -10,6 +10,7 @@ from arcgis.geometry import Geometry, SpatialReference
 from arcgis.gis import GIS, Item
 from ast import List
 from datetime import datetime
+import json
 from numpy import ndarray
 from pandas import DataFrame, Series, concat
 import requests
@@ -261,16 +262,116 @@ class FeatureLayerCollectionDecorator:
         else:
             return response
 
+
+class LayerServerGen:
+    id: int
+    serverGen: int  # EPOCH time to start from in milliseconds
+
+    def __init__(self, id: int, serverGen: int) -> None:
+        self.id = id
+        self.serverGen = serverGen
+
+
+class LayerDomainNames:
+    id: int
+    names: list[str]
+
+    def __init__(self, id: int, names: list[str]) -> None:
+        self.id = id
+        self.names = names
+
+
+class Server:
+    _collection: FeatureLayerCollectionDecorator
+
+    def __init__(self, collection: FeatureLayerCollectionDecorator) -> None:
+        self._collection = collection
+
+    def extractChanges(
+        self,
+        layer_servergen: list[LayerServerGen],
+        inserts: bool = True,
+        updates: bool = True,
+        deletes: bool = False,
+    ):
+        return self._collection._featureLayerCollection.extract_changes(
+            layers=[i.id for i in layer_servergen],
+            layer_servergen=[i.__dict__ for i in layer_servergen],
+            return_inserts=inserts,
+            return_updates=updates,
+            return_deletes=deletes,
+            return_ids_only=True,
+        )
+
+    def query(
+        self,
+        layerDefinitions: list[
+            dict[
+                Literal["layerId", "where", "outFields"],
+                Union[int, str],
+            ],
+        ],
+        geometry: Optional[
+            Union[
+                dict[
+                    Literal["x", "y"],
+                    float,
+                ],
+                dict[
+                    Literal["points"],
+                    Union[ndarray, list],
+                ],
+            ]
+        ] = None,
+        geometryType: Literal[
+            "esriGeometryPoint",
+            "esriGeometryMultipoint",
+            "esriGeometryPolyline",
+            "esriGeometryPolygon",
+            "esriGeometryEnvelope",
+            "esriGeometryMultiPatch",
+        ] = "esriGeometryPoint",
+        spatialRel: Literal[
+            "esriSpatialRelIntersects",
+            "esriSpatialRelContains",
+            "esriSpatialRelCrosses",
+            "esriSpatialRelEnvelopeIntersects",
+            "esriSpatialRelIndexIntersects",
+            "esriSpatialRelOverlaps",
+            "esriSpatialRelTouches",
+            "esriSpatialRelWithin",
+        ] = "esriSpatialRelIntersects",
+        return_geometry=False,
+        as_df=True,
+    ):
+        if geometry is not None:
+            if list(geometry.keys()).count("points") != 0:
+                if isinstance(geometry["points"], ndarray):
+                    geometry["points"] = geometry["points"].tolist()
+
+                geometry["geometry"] = {"points": geometry["points"]}
+                del geometry["points"]
+
+            geometry["spatialReference"] = spatialRef  # type: ignore
+            geometry["geometryType"] = geometryType  # type: ignore
+            geometry["spatialRel"] = spatialRel  # type: ignore
+
+        return self._collection.query(
+            layer_defs_filter=layerDefinitions,
+            geometry_filter=geometry,
+            return_geometry=return_geometry,
+            as_df=as_df,
+        )
+
     def queryDomains(
         self,
-        layers: Union[tuple, list[int]],
-    ) -> list[Any]:
-        domains = self._featureLayerCollection.query_domains(layers)
-
-        if not isinstance(domains, list):
-            raise Exception("Response not supported")
-
-        return domains
+        layer_domainnames: list[LayerDomainNames],
+    ):
+        domains = self._collection._featureLayerCollection.query_domains(
+            [l.id for l in layer_domainnames]
+        )
+        nameSet = {item for l in layer_domainnames for item in l.names}
+        return [d for d in domains if d["name"] in nameSet]
 
 
 class LayerTable:
@@ -281,15 +382,9 @@ class LayerTable:
 
     def query(
         self,
-        columns: Union[
+        outFields: Union[
             str,
             list[str],
-            list[
-                dict[
-                    Literal["layerId", "where", "outFields"],
-                    Union[int, str],
-                ]
-            ],
         ] = "OBJECTID",
         where: str = "1=1",
         geometry: Union[
@@ -337,44 +432,38 @@ class LayerTable:
             geometry["geometryType"] = geometryType  # type: ignore
             geometry["spatialRel"] = spatialRel  # type: ignore
 
-        if isinstance(self._feature, FeatureLayerCollectionDecorator):
-            return self._feature.query(
-                layer_defs_filter=columns,
-                geometry_filter=geometry,
-                return_geometry=True,
-                as_df=as_df,
-            )
-
+        if isinstance(outFields, list):
+            out_fields = ",".join(outFields)  # type: ignore
         else:
-            if isinstance(columns, list):
-                out_fields = ",".join(columns)  # type: ignore
-            else:
-                out_fields = columns
+            out_fields = outFields
 
-            result = self._feature.query(
-                where=where,
-                out_fields=out_fields,
-                geometry_filter=geometry,  # type: ignore
-                return_geometry=return_geometry,
-            )
-            # workaround for querying Table as_df
-            return result.sdf if as_df else result
+        result = self._feature.query(
+            where=where,
+            out_fields=out_fields,
+            geometry_filter=geometry,  # type: ignore
+            return_geometry=return_geometry,
+        )
+        # workaround for querying Table as_df
+        return result.sdf if as_df else result
 
-    def add(self, dataframe: DataFrame):
-        return self.__edit_features(dataframe, "add")
+    def add(self, data: Union[DataFrame, str]):
+        return self.__edit_features(data, "add")
 
-    def delete(self, dataframe: DataFrame):
-        return self.__edit_features(dataframe, "delete")
+    def delete(self, data: Union[DataFrame, str]):
+        return self.__edit_features(data, "delete")
 
-    def update(self, dataframe: DataFrame):
-        return self.__edit_features(dataframe, "update")
+    def update(self, data: Union[DataFrame, str]):
+        return self.__edit_features(data, "update")
 
     def __edit_features(
         self,
-        dataframe: DataFrame,
+        data: Union[DataFrame, str],
         operation: Literal["add", "update", "delete"],
     ):
-        featureSet = FeatureSet.from_dataframe(dataframe)
+        if isinstance(data, DataFrame):
+            featureSet = FeatureSet.from_dataframe(data)
+        else:
+            featureSet = FeatureSet.from_json(data)
 
         # hints are wrong. Should be FeatureSet not list[FeatureSet]
         # https://developers.arcgis.com/python/api-reference/arcgis.features.toc.html#arcgis.features.FeatureLayer.edit_features
@@ -387,65 +476,19 @@ class LayerTable:
         else:
             raise Exception(f"Operation {operation} not supported.")
 
+        if isinstance(data, str):
+            data = DF_Util.createFromList(json.loads(data))
+
         if isinstance(result, dict):
             return concat(
                 [
-                    dataframe,
+                    data,
                     DataFrame(result[f"{operation}Results"]),
                 ],
                 axis=1,
             )
         else:
             raise Exception("Unsupported return type.")
-
-
-class LayerServerGen:
-    id: int
-    serverGen: int  # EPOCH time to start from in milliseconds
-
-    def __init__(self, id: int, serverGen: int) -> None:
-        self.id = id
-        self.serverGen = serverGen
-
-
-class LayerDomainNames:
-    id: int
-    names: list[str]
-
-    def __init__(self, id: int, names: list[str]) -> None:
-        self.id = id
-        self.names = names
-
-
-class Server:
-    _collection: FeatureLayerCollectionDecorator
-
-    def __init__(self, collection: FeatureLayerCollectionDecorator) -> None:
-        self._collection = collection
-
-    def extractChanges(
-        self,
-        layer_servergen: list[LayerServerGen],
-        inserts: bool = True,
-        updates: bool = True,
-        deletes: bool = False,
-    ):
-        return self._collection._featureLayerCollection.extract_changes(
-            layers=[i.id for i in layer_servergen],
-            layer_servergen=[i.__dict__ for i in layer_servergen],
-            return_inserts=inserts,
-            return_updates=updates,
-            return_deletes=deletes,
-            return_ids_only=True,
-        )
-
-    def queryDomains(
-        self,
-        layer_domainnames: list[LayerDomainNames],
-    ):
-        domains = self._collection.queryDomains([l.id for l in layer_domainnames])
-        nameSet = {item for l in layer_domainnames for item in l.names}
-        return [d for d in domains if d["name"] in nameSet]
 
 
 class GISFactory:
