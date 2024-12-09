@@ -13,15 +13,15 @@ import json
 from numpy import ndarray
 from pandas import DataFrame, Series, concat
 import requests
-from typing import Any, Literal, Optional, Union
+from typing import Any, Callable, Literal, Optional, Union
 from urllib.parse import urlparse
 from uuid import UUID
 
 Map = dict[
     str,
     dict[
-        Literal["Value", "Source"],
-        Union[str, int, None],
+        Literal["Value", "Source", "Func"],
+        Union[str, int, Callable[[Any], Any], None],
     ],
 ]
 
@@ -37,23 +37,31 @@ class Map_Util:
         if len(keys) != 1:
             raise Exception(f"Zero or more than one key found: {keys}")
 
-        if keys[0] == "Value":
-            value = map[key].get("Value", None)
+        expr = map[keys[0]]
+
+        if keys[0] == "Func":
+            if isinstance(expr, Callable):
+                value = expr(source[key])
+
+            else:
+                raise Exception(f"Invalid function {key}")
+
+        elif keys[0] == "Source":
+            if expr is None:
+                raise Exception(f"Invalid column {key}.")
+
+            if isinstance(expr, str) and expr.count("+") > 0:
+                columns = [col.strip() for col in expr.split("+")]
+                value = source[columns].agg(lambda x: "".join(x.map(str)), 1)
+
+            else:
+                value = source[expr].values
+
+        else:
+            value = expr
 
             if isinstance(value, str) and value == "utcNow":
                 value = datetime.utcnow()
-
-        else:
-            column = map[key].get("Source", None)
-
-            if column is None:
-                raise Exception(f"Invalid column {key}.")
-
-            if isinstance(column, str) and column.count("+") > 0:
-                columns = [col.strip() for col in column.split("+")]
-                value = source[columns].agg(lambda x: "".join(x.map(str)), 1)
-            else:
-                value = source[column].values
 
         return value
 
@@ -161,6 +169,15 @@ class DF_Util:
 spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
 
 
+class LayerAppend:
+    id: int
+    features: list
+
+    def __init__(self, id: int, features: list):
+        self.id = id
+        self.features = features
+
+
 class LayerEdits:
     id: int
     adds: FeatureSet
@@ -238,9 +255,31 @@ class Server:
                 collection_or_item
             )
 
+    def append(self, layer_appends: list[LayerAppend]):
+        for item in layer_appends:
+            for layer in self._featureLayerCollection.properties.layers:
+                if layer.id == item.id:
+                    LayerTable(
+                        FeatureLayer(
+                            self._featureLayerCollection.url + "/" + str(item.id),
+                            self._featureLayerCollection._gis,
+                            self,
+                        )
+                    ).append(item.features)
+            for table in self._featureLayerCollection.properties.tables:
+                if table in self._featureLayerCollection.properties.tables:
+                    if table.id == item.id:
+                        LayerTable(
+                            Table(
+                                self._featureLayerCollection.url + "/" + str(item.id),
+                                self._featureLayerCollection._gis,
+                                self,
+                            )
+                        ).append(item.features)
+
     def apply_edits(
         self,
-        edits: list[LayerEdits],
+        layer_edits: list[LayerEdits],
         gdbVersion: Optional[str] = None,
         rollbackOnFailure=True,
         useGlobalIds=False,
@@ -253,7 +292,7 @@ class Server:
         response = requests.post(
             self._featureLayerCollection.url + "/applyEdits",
             {
-                "edits": [edit.__dict__ for edit in edits],
+                "edits": [edit.__dict__ for edit in layer_edits],
                 "gdbVersion": gdbVersion,
                 "rollbackOnFailure": rollbackOnFailure,
                 "useGlobalIds": useGlobalIds,
