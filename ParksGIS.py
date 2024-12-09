@@ -1,4 +1,3 @@
-from arcgis._impl.common._filters import GeometryFilter
 from arcgis.features import (
     FeatureLayer,
     FeatureSet,
@@ -16,7 +15,6 @@ from pandas import DataFrame, Series, concat
 import requests
 from typing import Any, Literal, Optional, Union
 from urllib.parse import urlparse
-from uu import Error
 from uuid import UUID
 
 Map = dict[
@@ -37,7 +35,7 @@ class Map_Util:
     ) -> Any:
         keys = list(map[key].keys())
         if len(keys) != 1:
-            raise Error(f"Zero or more than one key found: {keys}")
+            raise Exception(f"Zero or more than one key found: {keys}")
 
         if keys[0] == "Value":
             value = map[key].get("Value", None)
@@ -163,14 +161,74 @@ class DF_Util:
 spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
 
 
-# There is a bug in argcis.features.FeatureLayerCollection.query()
-# layer_defs_filter is not being added to query param
-class FeatureLayerCollectionDecorator:
+class LayerEdits:
+    id: int
+    adds: FeatureSet
+    updates: FeatureSet
+
+    def __init__(
+        self,
+        id: int,
+        adds: Optional[FeatureSet] = None,
+        updates: Optional[FeatureSet] = None,
+    ):
+        self.id = id
+        if adds is not None:
+            self.adds = adds
+        if updates is not None:
+            self.updates = updates
+
+
+class LayerQuery:
+    layerId: int
+    outFields: list[str]
+    where: str
+
+    def __init__(
+        self,
+        id: int,
+        fields: list[str] = ["OBJECTID"],
+        where: str = "1=1",
+    ):
+        self.layerId = id
+        self.outFields = fields
+        self.where = where
+
+
+class LayerDomainNames:
+    id: int
+    names: list[str]
+
+    def __init__(
+        self,
+        id: int,
+        names: list[str],
+    ) -> None:
+        self.id = id
+        self.names = names
+
+
+class LayerServerGen:
+    id: int
+    serverGen: int  # EPOCH time to start from in milliseconds
+
+    def __init__(
+        self,
+        id: int,
+        serverGen: int,
+    ) -> None:
+        self.id = id
+        self.serverGen = serverGen * 1000
+
+
+class Server:
     _featureLayerCollection: FeatureLayerCollection
     _token: str
 
     def __init__(
-        self, token: str, collection_or_item: Union[FeatureLayerCollection, Item]
+        self,
+        token: str,
+        collection_or_item: Union[FeatureLayerCollection, Item],
     ) -> None:
         self._token = token
         if isinstance(collection_or_item, FeatureLayerCollection):
@@ -180,44 +238,127 @@ class FeatureLayerCollectionDecorator:
                 collection_or_item
             )
 
+    def apply_edits(
+        self,
+        edits: list[LayerEdits],
+        gdbVersion: Optional[str] = None,
+        rollbackOnFailure=True,
+        useGlobalIds=False,
+        returnEditMoment=False,
+        returnServiceEditsOption: Literal[
+            "none",
+            "originalAndCurrentFeatures",
+        ] = "none",
+    ):
+        response = requests.post(
+            self._featureLayerCollection.url + "/applyEdits",
+            {
+                "edits": [edit.__dict__ for edit in edits],
+                "gdbVersion": gdbVersion,
+                "rollbackOnFailure": rollbackOnFailure,
+                "useGlobalIds": useGlobalIds,
+                "returnEditMoment": returnEditMoment,
+                "returnServiceEditsOption": returnServiceEditsOption,
+                "f": "json",
+            },
+        ).json()
+
+        if response.get("error", None) != None:
+            raise Exception(response["error"])
+
+        return response
+
+    def extractChanges(
+        self,
+        layer_servergen: list[LayerServerGen],
+        inserts=True,
+        updates=True,
+        deletes=False,
+    ):
+        return self._featureLayerCollection.extract_changes(
+            layers=[i.id for i in layer_servergen],
+            layer_servergen=[i.__dict__ for i in layer_servergen],
+            return_inserts=inserts,
+            return_updates=updates,
+            return_deletes=deletes,
+            return_ids_only=True,
+        )
+
+    # There is a bug in argcis.features.FeatureLayerCollection.query()
+    # layer_defs_filter is not being added to query param
     def query(
         self,
-        layer_defs_filter: list[dict[str, Any]],
-        geometry_filter: Optional[GeometryFilter] = None,
-        time_filter=None,
-        return_geometry=True,
-        return_ids_only=False,
-        return_count_only=False,
-        return_z=False,
-        return_m=False,
-        out_sr=None,
-        as_df=True,
-    ) -> DataFrame:
+        layerDefinitions: list[LayerQuery],
+        geometry: Optional[
+            Union[
+                dict[
+                    Literal["x", "y"],
+                    float,
+                ],
+                dict[
+                    Literal["points"],
+                    Union[ndarray, list],
+                ],
+            ]
+        ] = None,
+        geometryType: Literal[
+            "esriGeometryEnvelope",
+            "esriGeometryPoint",
+            "esriGeometryPolyline",
+            "esriGeometryPolygon",
+            "esriGeometryMultipoint",
+        ] = "esriGeometryEnvelope",
+        spatialRelationship: Literal[
+            "esriSpatialRelIntersects",
+            "esriSpatialRelContains",
+            "esriSpatialRelCrosses",
+            "esriSpatialRelEnvelopeIntersects",
+            "esriSpatialRelIndexIntersects",
+            "esriSpatialRelOverlaps",
+            "esriSpatialRelTouches",
+            "esriSpatialRelWithin",
+        ] = "esriSpatialRelIntersects",
+        returnDistinctValues: bool = False,
+        returnGeometry: bool = False,
+        returnCountOnly: bool = False,
+        returnZ: bool = False,
+        returnM: bool = False,
+        as_df: bool = True,
+    ):
+        # if geometry is not None:
+        #     if list(geometry.keys()).count("points") != 0:
+        #         if isinstance(geometry["points"], ndarray):
+        #             geometry["points"] = geometry["points"].tolist()
+
+        #         geometry["geometry"] = {"points": geometry["points"]}
+        #         del geometry["points"]
+
+        #     geometry["spatialReference"] = spatialRef  # type: ignore
+        #     geometry["geometryType"] = geometryType  # type: ignore
+        #     geometry["spatialRel"] = spatialRel  # type: ignore
+
         response = requests.post(
             self._featureLayerCollection.url + "/query",
             {
-                "layerDefs": str(layer_defs_filter),
-                "geometry": str(geometry_filter["geometry"]),
-                "geometryType": geometry_filter["geometryType"],
-                "spatialRel": geometry_filter["spatialRel"],
-                "returnDistinctValues": False,
-                "returnGeometry": return_geometry,
-                "returnIdsOnly": return_ids_only,
-                "returnCountOnly": return_count_only,
-                "returnZ": return_z,
-                "returnM": return_m,
+                "layerDefs": str(layerDefinitions),
+                "geometry": geometry,
+                "geometryType": geometryType,
+                "spatialRel": spatialRelationship,
+                "returnDistinctValues": returnDistinctValues,
+                "returnGeometry": returnGeometry,
+                "returnCountOnly": returnCountOnly,
+                "returnZ": returnZ,
+                "returnM": returnM,
                 "multipatchOption": "xyFootprint",
                 "returnTrueCurves": False,
                 "sqlFormat": "none",
-                "outSR": out_sr,
-                "time": time_filter,
-                "f": "pjson",
+                "f": "json",
                 "token": self._token,
             },
         ).json()
 
         if response.get("error", None) != None:
-            raise Error(response["error"])
+            raise Exception(response["error"])
 
         # TODO: MUST REFACTOR!!! SOMEONELESE NEEDS TO FIX THIS HOT MESS!!
         if as_df:
@@ -262,112 +403,11 @@ class FeatureLayerCollectionDecorator:
         else:
             return response
 
-
-class LayerServerGen:
-    id: int
-    serverGen: int  # EPOCH time to start from in milliseconds
-
-    def __init__(self, id: int, serverGen: int) -> None:
-        self.id = id
-        self.serverGen = serverGen
-
-
-class LayerDomainNames:
-    id: int
-    names: list[str]
-
-    def __init__(self, id: int, names: list[str]) -> None:
-        self.id = id
-        self.names = names
-
-
-class Server:
-    _collection: FeatureLayerCollectionDecorator
-
-    def __init__(self, collection: FeatureLayerCollectionDecorator) -> None:
-        self._collection = collection
-
-    def extractChanges(
-        self,
-        layer_servergen: list[LayerServerGen],
-        inserts: bool = True,
-        updates: bool = True,
-        deletes: bool = False,
-    ):
-        return self._collection._featureLayerCollection.extract_changes(
-            layers=[i.id for i in layer_servergen],
-            layer_servergen=[i.__dict__ for i in layer_servergen],
-            return_inserts=inserts,
-            return_updates=updates,
-            return_deletes=deletes,
-            return_ids_only=True,
-        )
-
-    def query(
-        self,
-        layerDefinitions: list[
-            dict[
-                Literal["layerId", "where", "outFields"],
-                Union[int, str],
-            ],
-        ],
-        geometry: Optional[
-            Union[
-                dict[
-                    Literal["x", "y"],
-                    float,
-                ],
-                dict[
-                    Literal["points"],
-                    Union[ndarray, list],
-                ],
-            ]
-        ] = None,
-        geometryType: Literal[
-            "esriGeometryPoint",
-            "esriGeometryMultipoint",
-            "esriGeometryPolyline",
-            "esriGeometryPolygon",
-            "esriGeometryEnvelope",
-            "esriGeometryMultiPatch",
-        ] = "esriGeometryPoint",
-        spatialRel: Literal[
-            "esriSpatialRelIntersects",
-            "esriSpatialRelContains",
-            "esriSpatialRelCrosses",
-            "esriSpatialRelEnvelopeIntersects",
-            "esriSpatialRelIndexIntersects",
-            "esriSpatialRelOverlaps",
-            "esriSpatialRelTouches",
-            "esriSpatialRelWithin",
-        ] = "esriSpatialRelIntersects",
-        return_geometry=False,
-        as_df=True,
-    ):
-        if geometry is not None:
-            if list(geometry.keys()).count("points") != 0:
-                if isinstance(geometry["points"], ndarray):
-                    geometry["points"] = geometry["points"].tolist()
-
-                geometry["geometry"] = {"points": geometry["points"]}
-                del geometry["points"]
-
-            geometry["spatialReference"] = spatialRef  # type: ignore
-            geometry["geometryType"] = geometryType  # type: ignore
-            geometry["spatialRel"] = spatialRel  # type: ignore
-
-        return self._collection.query(
-            layer_defs_filter=layerDefinitions,
-            geometry_filter=geometry,
-            return_geometry=return_geometry,
-            as_df=as_df,
-        )
-
     def queryDomains(
         self,
         layer_domainnames: list[LayerDomainNames],
     ):
-        domains = self._collection._featureLayerCollection.query_domains(
+        domains = self._featureLayerCollection.query_domains(
             [l.id for l in layer_domainnames]
         )
         nameSet = {item for l in layer_domainnames for item in l.names}
@@ -377,8 +417,29 @@ class Server:
 class LayerTable:
     _feature: Union[FeatureLayer, Table]
 
-    def __init__(self, feature: Union[FeatureLayer, Table]) -> None:
+    def __init__(
+        self,
+        feature: Union[FeatureLayer, Table],
+    ) -> None:
         self._feature = feature
+
+    def append(
+        self,
+        featutes: list,
+    ):
+        exists = {
+            self.query(
+                where="OBJECTID IN ("
+                + ",".join(feature["ObjectID"] for feature in featutes)
+                + ")",
+                # as_df=False,
+            )["OBJECTID"]
+        }
+
+        adds = [feature for feature in featutes if feature["OBJECTID"] not in exists]
+        updates = [feature for feature in featutes if feature["OBJECTID"] in exists]
+
+        return self._feature.edit_features(adds=adds, updates=updates)
 
     def query(
         self,
@@ -505,10 +566,8 @@ class GISFactory:
 
     def FeatureServer(self, url: str) -> Server:
         return Server(
-            FeatureLayerCollectionDecorator(
-                self._gis._con.token,  # type: ignore
-                FeatureLayerCollection(url, self._gis),
-            )
+            self._gis._con.token,  # type: ignore
+            FeatureLayerCollection(url, self._gis),
         )
 
     def FeatureLayer(self, url: str) -> LayerTable:
@@ -529,7 +588,7 @@ class GISFactory:
             urlParts = urlparse(id_url, "https")
 
             if urlParts.netloc == "":
-                raise Error("Invalid URL")
+                raise Exception("Invalid URL")
 
             path = urlParts.path.split("/")
             title = path[-3 if path[-1].isdigit() else -2]
@@ -555,10 +614,8 @@ class GISFactory:
 
             else:
                 return Server(
-                    FeatureLayerCollectionDecorator(
-                        self._gis._con.token,  # type: ignore
-                        collection[0],
-                    )
+                    self._gis._con.token,  # type: ignore
+                    collection[0],
                 )
 
         else:
