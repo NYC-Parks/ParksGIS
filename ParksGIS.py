@@ -1,72 +1,155 @@
+from functools import singledispatch
 from arcgis.features import (
     FeatureLayer,
-    FeatureSet,
     GeoAccessor,
     Table,
     FeatureLayerCollection,
 )
-from arcgis.geometry import Geometry, SpatialReference
+from arcgis.geometry import SpatialReference
 from arcgis.gis import GIS, Item
 from ast import List
 from datetime import datetime
 import json
-from numpy import ndarray
-from pandas import DataFrame, Series, concat
+from numpy import ndarray, number
+from pandas import DataFrame, Series, concat, json_normalize
 import requests
 from typing import Any, Callable, Literal, Optional, Union
 from urllib.parse import urlparse
 from uuid import UUID
 
+
+class MapExpr(dict):
+    def __init__(
+        self,
+        dict: Union[
+            dict[Literal["Func"], Callable[[Any], Any]],
+            dict[Literal["Source"], str],
+            dict[Literal["Value"], Union[str, int, None]],
+        ],
+    ):
+        if 1 != dict.keys().__len__():
+            raise Exception("Dictionary must have one key!")
+        self = dict
+
+
 Map = dict[
     str,
-    dict[
-        Literal["Value", "Source", "Func"],
-        Union[str, int, Callable[[Any], Any], None],
+    tuple[
+        Literal["Func", "Source", "Value"],
+        Union[Callable[[Any], Any], number, str, None],
     ],
 ]
 
 
-class Map_Util:
+class Transformer:
     @staticmethod
-    def getValue(
+    @singledispatch
+    def validate(_, type, __) -> Any:
+        if type not in ["Func", "Source", "Value"]:
+            raise Exception(f"Unsupported expression type: {type}")
+
+    @staticmethod
+    @validate.register(Callable)
+    def _(expr: Callable, _, key: str):
+        if not isinstance(expr, Callable):
+            raise Exception(f"Function not callable: {key}")
+
+    @staticmethod
+    @validate.register(str)
+    def _(expr: str, _, __):
+        if not isinstance(expr, str):
+            raise Exception(f"Invalid source column: {expr}")
+
+    @staticmethod
+    def getValues(
+        source: DataFrame,
+        map: Union[Map, tuple],
+    ) -> DataFrame:
+        result = DataFrame()
+
+        if isinstance(map, tuple):
+            map = dict(map)
+
+        for key, (type, expr) in map.items():
+            Transformer.validate(None, type, None)
+
+            if type == "Func":
+                Transformer.validate(expr, type, key)
+
+                result[key] = source[key].apply(expr)
+
+            elif type == "Source":
+                Transformer.validate(expr, type, key)
+
+                if "+" in expr:
+                    columns = [col.strip() for col in expr.split("+")]
+                    result[key] = source[columns].agg(lambda x: "".join(x.map(str)), 1)
+                else:
+                    result[key] = source[expr].values
+
+            else:
+                if isinstance(expr, str) and expr == "utcNow":
+                    result[key] = datetime.utcnow()
+                else:
+                    result[key] = expr
+
+        return result
+
+    @staticmethod
+    def update(
+        destination: DataFrame,
+        source: DataFrame,
         key: str,
         map: Map,
-        source: DataFrame,
-    ) -> Any:
-        keys = list(map[key].keys())
-        if len(keys) != 1:
-            raise Exception(f"Zero or more than one key found: {keys}")
+    ) -> DataFrame:
+        unhasablekey = False
+        keyType = source.at[0, key]
 
-        expr = map[keys[0]]
+        # create temp key for unhashable arrays
+        if isinstance(keyType, list) or isinstance(keyType, ndarray):
+            unhasablekey = True
 
-        if keys[0] == "Func":
-            if isinstance(expr, Callable):
-                value = expr(source[key])
+            destinationKey = key + "dest"
+            destination[destinationKey] = destination[key].apply(
+                lambda x: "".join(str(i) for i in x)
+            )
 
-            else:
-                raise Exception(f"Invalid function {key}")
+            sourceKey = key + "sour"
+            source[sourceKey] = source[key].apply(lambda x: "".join(str(i) for i in x))
 
-        elif keys[0] == "Source":
-            if expr is None:
-                raise Exception(f"Invalid column {key}.")
+        merged = destination.merge(
+            source,
+            left_on=destinationKey,
+            right_on=sourceKey,
+            how="left",
+            suffixes=(None, "_right"),
+            indicator=True,
+        )
 
-            if isinstance(expr, str) and expr.count("+") > 0:
-                columns = [col.strip() for col in expr.split("+")]
-                value = source[columns].agg(lambda x: "".join(x.map(str)), 1)
+        # map source columns to destination columns
+        for item in map.items():
+            for col, values in Transformer.getValues(
+                merged,
+                item,
+            ).items():
+                merged[col] = values
 
-            else:
-                value = source[expr].values
+        # remove all added columns
+        removeCols = source.columns.to_list()
+        removeCols.append("_merge")
+        if unhasablekey:
+            removeCols.append(destinationKey)
+            removeCols.append(sourceKey)
 
-        else:
-            value = expr
+        result = merged.drop(columns=removeCols)
 
-            if isinstance(value, str) and value == "utcNow":
-                value = datetime.utcnow()
+        renameCols = {}
+        for item in result.columns:
+            if "_right" in item:
+                renameCols[item] = item.replace("_right", "")
 
-        return value
+        return result.rename(columns=renameCols)
 
-
-class DF_Util:
     @staticmethod
     def createFromDF(
         source: DataFrame,
@@ -74,14 +157,12 @@ class DF_Util:
         x: Optional[str] = None,
         y: Optional[str] = None,
     ) -> DataFrame:
-        df = DataFrame()
+        result = DataFrame()
 
-        rows = source.shape[0]
-        for col in map:
-            value = Map_Util.getValue(
-                col,
-                map,
+        for item in map.items():
+            value = Transformer.getValue(
                 source,
+                item,
             )
 
             if (
@@ -89,81 +170,14 @@ class DF_Util:
                 or isinstance(value, ndarray)
                 or isinstance(value, Series)
             ):
-                df[col] = value
+                result[item] = value
             else:
-                df[col] = [value] * rows
+                result[item] = [value] * source.shape[0]
 
         if x is not None and y is not None:
-            df = GeoAccessor.from_xy(df, x, y, sr=2263)
+            result = GeoAccessor.from_xy(result, x, y, sr=2263)
 
-        return df
-
-    @staticmethod
-    def createFromList(list: list) -> DataFrame:
-        if isinstance(list[0], dict):
-            return DataFrame(list)
-        return DataFrame([i.__dict__ for i in list])
-
-    @staticmethod
-    def update(
-        destination: DataFrame,
-        destinationKey: str,
-        source: DataFrame,
-        sourceKey: str,
-        map: Map,
-    ) -> DataFrame:
-        rekey = False
-        columnValue = destination[destinationKey][0]
-
-        # create temp key for unhashable arrays
-        if isinstance(columnValue, list) or isinstance(columnValue, ndarray):
-            rekey = True
-
-            destination[destinationKey + "source"] = destination[destinationKey].apply(
-                lambda x: "".join(str(i) for i in x)
-            )
-            destinationKey += "source"
-
-            source[sourceKey + "delta"] = source[sourceKey].apply(
-                lambda x: "".join(str(i) for i in x)
-            )
-            sourceKey += "delta"
-
-        # merge dataframes on keys
-        merged = destination.merge(
-            source,
-            left_on=destinationKey,
-            right_on=sourceKey,
-            how="right",
-            suffixes=(None, "_right"),
-            indicator=True,
-        )
-
-        # map delta columns to source columns
-        for col in map:
-            values = Map_Util.getValue(
-                col,
-                map,
-                merged,
-            )
-
-            merged[col] = values
-
-        # remove all added columns
-        columns = source.columns.to_list()
-        columns.append("_merge")
-        if rekey:
-            columns.append(destinationKey)
-            columns.append(sourceKey)
-
-        removed = merged.drop(columns=columns)
-
-        rename = {}
-        for col in removed.columns:
-            if "_right" in col:
-                rename[col] = col.replace("_right", "")
-
-        return removed.rename(columns=rename)
+        return result
 
 
 spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
@@ -180,20 +194,22 @@ class LayerAppend:
 
 class LayerEdits:
     id: int
-    adds: FeatureSet
-    updates: FeatureSet
+    adds: DataFrame
+    updates: DataFrame
 
     def __init__(
         self,
         id: int,
-        adds: Optional[FeatureSet] = None,
-        updates: Optional[FeatureSet] = None,
+        adds: Optional[Union[DataFrame, list[str]]] = None,
+        updates: Optional[Union[DataFrame, list[str]]] = None,
     ):
         self.id = id
         if adds is not None:
-            self.adds = adds
+            self.adds = adds if isinstance(adds, DataFrame) else json_normalize(adds)
         if updates is not None:
-            self.updates = updates
+            self.updates = (
+                updates if isinstance(updates, DataFrame) else json_normalize(updates)
+            )
 
 
 class LayerQuery:
@@ -281,28 +297,42 @@ class Server:
         self,
         layer_edits: list[LayerEdits],
         gdbVersion: Optional[str] = None,
-        rollbackOnFailure=True,
-        useGlobalIds=False,
-        returnEditMoment=False,
+        rollbackOnFailure: bool = True,
+        useGlobalIds: bool = False,
+        returnEditMoment: bool = False,
         returnServiceEditsOption: Literal[
             "none",
             "originalAndCurrentFeatures",
         ] = "none",
-    ):
+    ) -> list[str]:
+        edits = []
+        for edit in layer_edits:
+            dict = edit.__dict__
+            if "adds" in dict:
+                dict["adds"] = {
+                    "attributes": dict["adds"].to_json(orient="records"),
+                }
+            if "updates" in dict:
+                dict["updates"] = {
+                    "attributes": dict["updates"].to_json(orient="records"),
+                }
+            edits.append(dict)
+
         response = requests.post(
             self._featureLayerCollection.url + "/applyEdits",
             {
-                "edits": [edit.__dict__ for edit in layer_edits],
+                "edits": json.dumps(edits),
                 "gdbVersion": gdbVersion,
                 "rollbackOnFailure": rollbackOnFailure,
                 "useGlobalIds": useGlobalIds,
                 "returnEditMoment": returnEditMoment,
                 "returnServiceEditsOption": returnServiceEditsOption,
                 "f": "json",
+                "token": self._token,
             },
         ).json()
 
-        if response.get("error", None) != None:
+        if not isinstance(response, list) and response.get("error") is not None:
             raise Exception(response["error"])
 
         return response
@@ -363,23 +393,14 @@ class Server:
         returnZ: bool = False,
         returnM: bool = False,
         as_df: bool = True,
-    ):
-        # if geometry is not None:
-        #     if list(geometry.keys()).count("points") != 0:
-        #         if isinstance(geometry["points"], ndarray):
-        #             geometry["points"] = geometry["points"].tolist()
-
-        #         geometry["geometry"] = {"points": geometry["points"]}
-        #         del geometry["points"]
-
-        #     geometry["spatialReference"] = spatialRef  # type: ignore
-        #     geometry["geometryType"] = geometryType  # type: ignore
-        #     geometry["spatialRel"] = spatialRel  # type: ignore
+    ) -> Union[dict[number, DataFrame], str]:
+        layerDefs = [layer.__dict__ for layer in layerDefinitions]
+        # print(layerDefs)
 
         response = requests.post(
             self._featureLayerCollection.url + "/query",
             {
-                "layerDefs": str(layerDefinitions),
+                "layerDefs": json.dumps(layerDefs),
                 "geometry": geometry,
                 "geometryType": geometryType,
                 "spatialRel": spatialRelationship,
@@ -396,51 +417,70 @@ class Server:
             },
         ).json()
 
-        if response.get("error", None) != None:
+        if response.get("error") != None:
             raise Exception(response["error"])
 
-        # TODO: MUST REFACTOR!!! SOMEONELESE NEEDS TO FIX THIS HOT MESS!!
-        if as_df:
-            df = DataFrame({"Point": geometry_filter["geometry"]["points"]})
-
-            for layer in response["layers"]:
-                fields = layer.get("fields", None)
-                features = layer.get("features", None)
-
-                if fields is not None:
-                    for field in fields:
-
-                        if len(features) == 1:
-                            df[field["name"]] = next(
-                                iter(features[0]["attributes"].values())
-                            )
-
-                        else:
-                            df[field["name"]] = None
-
-                            for i in df.index:
-                                for feature in features:
-                                    geometry = feature["geometry"]
-                                    geometry["spatialReference"] = spatialRef
-                                    ploygon = Geometry(geometry)
-
-                                    xy = df.at[i, "Point"]
-                                    point = Geometry(
-                                        {
-                                            "x": xy[0],
-                                            "y": xy[1],
-                                            "spatialReference": spatialRef,
-                                        }
-                                    )
-
-                                    if ploygon.intersect(point):
-                                        colName = field["name"]
-                                        value = feature["attributes"][colName]
-                                        df.at[i, colName] = value
-            return df
-
-        else:
+        if not as_df:
             return response
+
+        # if geometry is not None and 0 < geometry.keys().count("points"):
+        #     df["Point"] = geometry["points"]
+        #         if isinstance(geometry["points"], ndarray):
+        #             geometry["points"] = geometry["points"].tolist()
+
+        #         geometry["geometry"] = {"points": geometry["points"]}
+        #         del geometry["points"]
+
+        #     geometry["spatialReference"] = spatialRef  # type: ignore
+        #     geometry["geometryType"] = geometryType  # type: ignore
+        #     geometry["spatialRel"] = spatialRel  # type: ignore
+
+        dict = {}
+
+        for layer in response["layers"]:
+            columns = [field["name"] for field in response["layers"][0]["fields"]]
+            if returnGeometry:
+                columns.append("Geometry")
+            df = DataFrame(columns=columns)
+
+            for feature in layer["features"]:
+                if returnGeometry:
+                    feature["Geometry"] = feature.geometry
+                df.loc[len(df)] = feature["attributes"]
+
+            dict[layer["id"]] = df
+
+        return dict
+
+        # if fields is not None:
+        #     for field in fields:
+        #         if len(features) == 1:
+        #             df[field["name"]] = next(
+        #                 iter(features[0]["attributes"].values())
+        #             )
+
+        #         else:
+        #             df[field["name"]] = None
+
+        #             for i in df.index:
+        #                 for feature in features:
+        #                     geo = feature["geometry"]
+        #                     geo["spatialReference"] = spatialRef
+        #                     ploygon = Geometry(geometry)
+
+        #                     xy = df.at[i, "Point"]
+        #                     point = Geometry(
+        #                         {
+        #                             "x": xy[0],
+        #                             "y": xy[1],
+        #                             "spatialReference": spatialRef,
+        #                         }
+        #                     )
+
+        #                     if ploygon.intersect(point):
+        #                         colName = field["name"]
+        #                         value = feature["attributes"][colName]
+        #                         df.at[i, colName] = value
 
     def queryDomains(
         self,
