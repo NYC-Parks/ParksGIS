@@ -127,6 +127,7 @@ class Server:
                             )
                         ).append(item.features)
 
+    # ApplyEdits is missing from API
     def apply_edits(
         self,
         layer_edits: list[LayerEdits],
