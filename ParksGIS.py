@@ -7,10 +7,10 @@ from arcgis.features import (
 from arcgis.geometry import SpatialReference
 from arcgis.gis import GIS, Item
 import json
-from numpy import ndarray, number
-from pandas import DataFrame, concat, json_normalize, to_datetime
+from numpy import ndarray
+from pandas import DataFrame, concat, json_normalize
 import requests
-from typing import Literal, Optional, Union
+from typing import Any, Literal, Optional, Union
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -188,7 +188,7 @@ class Server:
         )
 
     # There is a bug in argcis.features.FeatureLayerCollection.query()
-    # layer_defs_filter is not being added to query param
+    # LayerDefinitionFilter is not being added to query param
     def query(
         self,
         layerDefinitions: list[LayerQuery],
@@ -227,105 +227,65 @@ class Server:
         returnZ: bool = False,
         returnM: bool = False,
         as_df: bool = True,
-    ) -> Union[dict[number, DataFrame], str]:
+    ) -> Union[dict[int, DataFrame], str]:
         layerDefs = [layer.__dict__ for layer in layerDefinitions]
         # print(layerDefs)
 
-        response = requests.post(
-            self._featureLayerCollection.url + "/query",
-            {
-                "layerDefs": json.dumps(layerDefs),
-                "geometry": geometry,
-                "geometryType": geometryType,
-                "spatialRel": spatialRelationship,
-                "returnDistinctValues": returnDistinctValues,
-                "returnGeometry": returnGeometry,
-                "returnCountOnly": returnCountOnly,
-                "returnZ": returnZ,
-                "returnM": returnM,
-                "multipatchOption": "xyFootprint",
-                "returnTrueCurves": False,
-                "sqlFormat": "none",
-                "f": "json",
-                "token": self._token,
-            },
-        ).json()
+        if as_df:
+            dict = {}
 
-        if response.get("error") != None:
-            raise Exception(response["error"])
+            for item in layerDefs:
+                layerId = item["layerId"]
+                self._featureLayerCollection._populate_layers()
 
-        if not as_df:
-            return response
+                for feature in [
+                    *self._featureLayerCollection.layers,
+                    *self._featureLayerCollection.tables,
+                ]:
+                    if layerId == feature.properties["id"]:
+                        dict[layerId] = LayerTable(feature).query(
+                            where=item["where"],
+                            outFields=item["outFields"],
+                        )
+                        break
 
-        # if geometry is not None and 0 < geometry.keys().count("points"):
-        #     df["Point"] = geometry["points"]
-        #         if isinstance(geometry["points"], ndarray):
-        #             geometry["points"] = geometry["points"].tolist()
+            return dict
 
-        #         geometry["geometry"] = {"points": geometry["points"]}
-        #         del geometry["points"]
+        else:
+            response = requests.post(
+                self._featureLayerCollection.url + "/query",
+                {
+                    "layerDefs": json.dumps(layerDefs),
+                    "geometry": geometry,
+                    "geometryType": geometryType,
+                    "spatialRel": spatialRelationship,
+                    "returnDistinctValues": returnDistinctValues,
+                    "returnGeometry": returnGeometry,
+                    "returnCountOnly": returnCountOnly,
+                    "returnZ": returnZ,
+                    "returnM": returnM,
+                    "multipatchOption": "xyFootprint",
+                    "returnTrueCurves": False,
+                    "sqlFormat": "none",
+                    "f": "json",
+                    "token": self._token,
+                },
+            ).json()
 
-        #     geometry["spatialReference"] = spatialRef  # type: ignore
-        #     geometry["geometryType"] = geometryType  # type: ignore
-        #     geometry["spatialRel"] = spatialRel  # type: ignore
+            if response.get("error") != None:
+                raise Exception(response["error"])
 
-        dict = {}
-
-        for layer in response["layers"]:
-            columns = [field["name"] for field in response["layers"][0]["fields"]]
-            if returnGeometry:
-                columns.append("Geometry")
-
-            df = DataFrame(columns=columns)
-
-            for feature in layer["features"]:
-                if returnGeometry:
-                    feature["Geometry"] = feature.geometry
-                df.loc[len(df)] = feature["attributes"]
-
-            dict[layer["id"]] = df
-
-        return dict
-
-        # if fields is not None:
-        #     for field in fields:
-        #         if len(features) == 1:
-        #             df[field["name"]] = next(
-        #                 iter(features[0]["attributes"].values())
-        #             )
-
-        #         else:
-        #             df[field["name"]] = None
-
-        #             for i in df.index:
-        #                 for feature in features:
-        #                     geo = feature["geometry"]
-        #                     geo["spatialReference"] = spatialRef
-        #                     ploygon = Geometry(geometry)
-
-        #                     xy = df.at[i, "Point"]
-        #                     point = Geometry(
-        #                         {
-        #                             "x": xy[0],
-        #                             "y": xy[1],
-        #                             "spatialReference": spatialRef,
-        #                         }
-        #                     )
-
-        #                     if ploygon.intersect(point):
-        #                         colName = field["name"]
-        #                         value = feature["attributes"][colName]
-        #                         df.at[i, colName] = value
+            return json.dumps(response)
 
     def queryDomains(
         self,
-        layer_domainnames: list[LayerDomainNames],
+        layer_domain_names: list[LayerDomainNames],
     ):
-        domains = self._featureLayerCollection.query_domains(
-            [l.id for l in layer_domainnames]
+        layerDomains = self._featureLayerCollection.query_domains(
+            layers=[layer.id for layer in layer_domain_names]
         )
-        nameSet = {item for l in layer_domainnames for item in l.names}
-        return [d for d in domains if d["name"] in nameSet]
+        domainNameSet = {name for layer in layer_domain_names for name in layer.names}
+        return [domain for domain in layerDomains if domain["name"] in domainNameSet]
 
 
 class LayerTable:
@@ -494,7 +454,7 @@ class GISFactory:
         self,
         id_url: Union[str, UUID],
         layer: Optional[int] = None,
-    ) -> Union[LayerTable, Server, None]:
+    ) -> Union[LayerTable, Server, Any]:
         if isinstance(id_url, UUID) and layer is not None:
             return LayerTable(self._gis.content.get(id_url.hex).layers[layer])
 
