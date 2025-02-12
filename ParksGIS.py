@@ -173,7 +173,7 @@ class Server:
 
         return response
 
-    def extractChanges(
+    def extract_changes(
         self,
         layer_servergen: list[LayerServerGen],
         inserts=True,
@@ -278,7 +278,7 @@ class Server:
 
             return json.dumps(response)
 
-    def queryDomains(
+    def query_domains(
         self,
         layer_domain_names: list[LayerDomainNames],
     ):
@@ -436,19 +436,19 @@ class GISFactory:
     ) -> None:
         self._gis = GIS(url, username, password, verify_cert=verify_cert)
 
-    def FeatureServer(self, url: str) -> Server:
+    def feature_server(self, url: str) -> Server:
         return Server(
             self._gis._con.token,  # type: ignore
             FeatureLayerCollection(url, self._gis),
         )
 
-    def FeatureLayer(self, url: str) -> LayerTable:
+    def feature_layer(self, url: str) -> LayerTable:
         return LayerTable(FeatureLayer(url, self._gis))
 
-    def FeatureTable(self, url: str) -> LayerTable:
+    def feature_table(self, url: str) -> LayerTable:
         return LayerTable(Table(url, self._gis))
 
-    def CreateFeature(
+    def create_feature(
         self,
         id_url: str | UUID,
         layer: Optional[int] = None,
