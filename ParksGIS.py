@@ -8,9 +8,9 @@ from arcgis.geometry import SpatialReference
 from arcgis.gis import GIS, Item
 import json
 from numpy import ndarray
-from pandas import DataFrame, concat, json_normalize
+from pandas import DataFrame, Series, concat, json_normalize
 import requests
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -28,21 +28,21 @@ class LayerAppend:
 
 class LayerEdits:
     id: int
-    adds: DataFrame
-    updates: DataFrame
+    adds: DataFrame | Series
+    updates: DataFrame | Series
 
     def __init__(
         self,
         id: int,
-        adds: Optional[Union[DataFrame, list[str]]] = None,
-        updates: Optional[Union[DataFrame, list[str]]] = None,
+        adds: DataFrame | Series | list[str] | None = None,
+        updates: DataFrame | Series | list[str] | None = None,
     ):
         self.id = id
         if adds is not None:
-            self.adds = adds if isinstance(adds, DataFrame) else json_normalize(adds)
+            self.adds = json_normalize(adds) if isinstance(adds, list) else adds
         if updates is not None:
             self.updates = (
-                updates if isinstance(updates, DataFrame) else json_normalize(updates)
+                json_normalize(updates) if isinstance(updates, list) else updates
             )
 
 
@@ -95,7 +95,7 @@ class Server:
     def __init__(
         self,
         token: str,
-        collection_or_item: Union[FeatureLayerCollection, Item],
+        collection_or_item: FeatureLayerCollection | Item,
     ) -> None:
         self._token = token
         if isinstance(collection_or_item, FeatureLayerCollection):
@@ -113,7 +113,6 @@ class Server:
                         FeatureLayer(
                             self._featureLayerCollection.url + "/" + str(item.id),
                             self._featureLayerCollection._gis,
-                            self,
                         )
                     ).append(item.features)
             for table in self._featureLayerCollection.properties.tables:
@@ -123,7 +122,6 @@ class Server:
                             Table(
                                 self._featureLayerCollection.url + "/" + str(item.id),
                                 self._featureLayerCollection._gis,
-                                self,
                             )
                         ).append(item.features)
 
@@ -144,14 +142,17 @@ class Server:
         for edit in layer_edits:
             dict = edit.__dict__
             if "adds" in dict:
-                dict["adds"] = {
-                    "attributes": dict["adds"].to_json(orient="records"),
-                }
+                dict["adds"] = [
+                    {"attributes": item._asdict()}
+                    for item in dict["adds"].itertuples(index=False)
+                ]
             if "updates" in dict:
-                dict["updates"] = {
-                    "attributes": dict["updates"].to_json(orient="records"),
-                }
+                dict["updates"] = [
+                    {"attributes": item._asdict()}
+                    for item in dict["updates"].itertuples(index=False)
+                ]
             edits.append(dict)
+        print(edits)
 
         response = requests.post(
             self._featureLayerCollection.url + "/applyEdits",
@@ -193,18 +194,17 @@ class Server:
     def query(
         self,
         layerDefinitions: list[LayerQuery],
-        geometry: Optional[
-            Union[
-                dict[
-                    Literal["x", "y"],
-                    float,
-                ],
-                dict[
-                    Literal["points"],
-                    Union[ndarray, list],
-                ],
+        geometry: (
+            dict[
+                Literal["x", "y"],
+                float,
             ]
-        ] = None,
+            | dict[
+                Literal["points"],
+                ndarray | list,
+            ]
+            | None
+        ) = None,
         geometryType: Literal[
             "esriGeometryEnvelope",
             "esriGeometryPoint",
@@ -228,7 +228,7 @@ class Server:
         returnZ: bool = False,
         returnM: bool = False,
         as_df: bool = True,
-    ) -> Union[dict[int, DataFrame], str]:
+    ) -> dict[int, DataFrame] | str:
         layerDefs = [layer.__dict__ for layer in layerDefinitions]
         # print(layerDefs)
 
@@ -290,11 +290,11 @@ class Server:
 
 
 class LayerTable:
-    _feature: Union[FeatureLayer, Table]
+    _feature: FeatureLayer | Table
 
     def __init__(
         self,
-        feature: Union[FeatureLayer, Table],
+        feature: FeatureLayer | Table,
     ) -> None:
         self._feature = feature
 
@@ -318,22 +318,19 @@ class LayerTable:
 
     def query(
         self,
-        outFields: Union[
-            str,
-            list[str],
-        ] = "OBJECTID",
+        outFields: str | list[str] = "OBJECTID",
         where: str = "1=1",
-        geometry: Union[
+        geometry: (
             dict[
                 Literal["x", "y"],
                 float,
-            ],
-            dict[
+            ]
+            | dict[
                 Literal["points"],
-                Union[ndarray, list],
-            ],
-            None,
-        ] = None,
+                ndarray | list,
+            ]
+            | None
+        ) = None,
         geometryType: Literal[
             "esriGeometryPoint",
             "esriGeometryMultipoint",
@@ -382,18 +379,18 @@ class LayerTable:
         # workaround for querying Table as_df
         return result.sdf if as_df else result
 
-    def add(self, data: Union[DataFrame, str]):
+    def add(self, data: DataFrame | str):
         return self.__edit_features(data, "add")
 
-    def delete(self, data: Union[DataFrame, str]):
+    def delete(self, data: DataFrame | str):
         return self.__edit_features(data, "delete")
 
-    def update(self, data: Union[DataFrame, str]):
+    def update(self, data: DataFrame | str):
         return self.__edit_features(data, "update")
 
     def __edit_features(
         self,
-        data: Union[DataFrame, str],
+        data: DataFrame | str,
         operation: Literal["add", "update", "delete"],
     ):
         if isinstance(data, DataFrame):
@@ -453,9 +450,9 @@ class GISFactory:
 
     def CreateFeature(
         self,
-        id_url: Union[str, UUID],
+        id_url: str | UUID,
         layer: Optional[int] = None,
-    ) -> Union[LayerTable, Server, Any]:
+    ) -> LayerTable | Server | Any:
         if isinstance(id_url, UUID) and layer is not None:
             return LayerTable(self._gis.content.get(id_url.hex).layers[layer])
 
