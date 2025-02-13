@@ -9,7 +9,7 @@ from arcgis.gis import GIS, Item
 import json
 from numpy import ndarray
 from pandas import DataFrame, Series, concat, json_normalize
-import requests
+from requests import Response, post
 from typing import Any, Literal, Optional
 from urllib.parse import urlparse
 from uuid import UUID
@@ -152,9 +152,9 @@ class Server:
                     for item in dict["updates"].itertuples(index=False)
                 ]
             edits.append(dict)
-        print(edits)
+        # print(edits)
 
-        response = requests.post(
+        response: Response = post(
             self._featureLayerCollection.url + "/applyEdits",
             {
                 "edits": json.dumps(edits),
@@ -166,12 +166,9 @@ class Server:
                 "f": "json",
                 "token": self._token,
             },
-        ).json()
+        )
 
-        if not isinstance(response, list) and response.get("error") is not None:
-            raise Exception(response["error"])
-
-        return response
+        return list(self.__response_handler(response))
 
     def extract_changes(
         self,
@@ -228,7 +225,7 @@ class Server:
         returnZ: bool = False,
         returnM: bool = False,
         as_df: bool = True,
-    ) -> dict[int, DataFrame] | str:
+    ) -> dict[int, DataFrame]:
         layerDefs = [layer.__dict__ for layer in layerDefinitions]
         # print(layerDefs)
 
@@ -253,7 +250,7 @@ class Server:
             return dict
 
         else:
-            response = requests.post(
+            response: Response = post(
                 self._featureLayerCollection.url + "/query",
                 {
                     "layerDefs": json.dumps(layerDefs),
@@ -271,12 +268,9 @@ class Server:
                     "f": "json",
                     "token": self._token,
                 },
-            ).json()
+            )
 
-            if response.get("error") != None:
-                raise Exception(response["error"])
-
-            return json.dumps(response)
+            return self.__response_handler(response)
 
     def query_domains(
         self,
@@ -287,6 +281,16 @@ class Server:
         )
         domainNameSet = {name for layer in layer_domain_names for name in layer.names}
         return [domain for domain in layerDomains if domain["name"] in domainNameSet]
+
+    def __response_handler(self, response: Response) -> dict[Any, Any] | list:
+        result = response.json()
+        if not response.ok:
+            raise Exception(result)
+
+        if result.get("error") is not None:
+            raise Exception(result)
+
+        return result
 
 
 class LayerTable:
