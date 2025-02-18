@@ -6,12 +6,12 @@ from arcgis.features import (
 )
 from arcgis.geometry import SpatialReference
 from arcgis.gis import GIS, Item
-import json
+from json import dumps, loads
 from numpy import ndarray
 from pandas import DataFrame, Series, concat, json_normalize
 from requests import Response, post
 from typing import Any, Literal, Optional
-from urllib.parse import urlparse
+from urllib import parse
 from uuid import UUID
 
 spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
@@ -56,7 +56,7 @@ class LayerQuery:
         id: int,
         fields: list[str] = ["OBJECTID"],
         where: str = "1=1",
-    ):
+    ) -> None:
         self.layerId = id
         self.outFields = ",".join(fields)
         self.where = where
@@ -157,7 +157,7 @@ class Server:
         response: Response = post(
             self._featureLayerCollection.url + "/applyEdits",
             {
-                "edits": json.dumps(edits),
+                "edits": dumps(edits),
                 "gdbVersion": gdbVersion,
                 "rollbackOnFailure": rollbackOnFailure,
                 "useGlobalIds": useGlobalIds,
@@ -253,7 +253,7 @@ class Server:
             response: Response = post(
                 self._featureLayerCollection.url + "/query",
                 {
-                    "layerDefs": json.dumps(layerDefs),
+                    "layerDefs": dumps(layerDefs),
                     "geometry": geometry,
                     "geometryType": geometryType,
                     "spatialRel": spatialRelationship,
@@ -414,7 +414,7 @@ class LayerTable:
             raise Exception(f"Operation {operation} not supported.")
 
         if isinstance(data, str):
-            data = DF_Util.createFromList(json.loads(data))
+            data = DF_Util.createFromList(loads(data))
 
         if isinstance(result, dict):
             return concat(
@@ -461,7 +461,7 @@ class GISFactory:
             return LayerTable(self._gis.content.get(id_url.hex).layers[layer])
 
         elif isinstance(id_url, str):
-            urlParts = urlparse(id_url, "https")
+            urlParts = parse.urlparse(id_url, "https")
 
             if urlParts.netloc == "":
                 raise Exception("Invalid URL")
