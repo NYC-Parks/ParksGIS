@@ -69,7 +69,7 @@ class LayerDomainNames:
     def __init__(
         self,
         id: int,
-        names: list[str],
+        names: list[str] = ["*"],
     ) -> None:
         self.id = id
         self.names = names
@@ -275,10 +275,14 @@ class Server:
     def query_domains(
         self,
         layer_domain_names: list[LayerDomainNames],
-    ):
+    ) -> list[bytes]:
         layerDomains = self._featureLayerCollection.query_domains(
             layers=[layer.id for layer in layer_domain_names]
         )
+
+        if layer_domain_names[0].names[0] == "*":
+            return list(layerDomains)
+
         domainNameSet = {name for layer in layer_domain_names for name in layer.names}
         return [domain for domain in layerDomains if domain["name"] in domainNameSet]
 
