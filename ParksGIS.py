@@ -173,18 +173,29 @@ class Server:
     def extract_changes(
         self,
         layer_servergen: list[LayerServerGen],
-        inserts=True,
-        updates=True,
-        deletes=False,
+        layer_query: list[LayerQuery],
+        inserts: bool = True,
+        updates: bool = True,
+        deletes: bool = False,
+        return_ids_only: bool = True,
     ):
-        return self._featureLayerCollection.extract_changes(
-            layers=[i.id for i in layer_servergen],
-            layer_servergen=[i.__dict__ for i in layer_servergen],
+        changes = self._featureLayerCollection.extract_changes(
+            layers=[layer.id for layer in layer_servergen],
+            layer_servergen=[layer.__dict__ for layer in layer_servergen],
+            queries={
+                str(layer.layerId): {"where": layer.where}
+                for _, layer in enumerate(layer_query)
+            },
             return_inserts=inserts,
             return_updates=updates,
             return_deletes=deletes,
             return_ids_only=True,
         )
+
+        if return_ids_only:
+            return changes
+
+        raise Exception("Not Implemented")
 
     # There is a bug in argcis.features.FeatureLayerCollection.query()
     # LayerDefinitionFilter is not being added to query param
@@ -230,24 +241,24 @@ class Server:
         # print(layerDefs)
 
         if as_df:
-            dict = {}
+            self._featureLayerCollection._populate_layers()
+            features = {
+                feature.properties["id"]: feature
+                for _, feature in enumerate(
+                    self._featureLayerCollection.layers
+                    + self._featureLayerCollection.tables
+                )
+            }
+            result = {}
 
-            for item in layerDefs:
-                layerId = item["layerId"]
-                self._featureLayerCollection._populate_layers()
+            for layer in layerDefinitions:
+                feature = features[layer.layerId]
+                result[layer.layerId] = LayerTable(feature).query(
+                    where=layer.where,
+                    outFields=layer.outFields,
+                )
 
-                for feature in [
-                    *self._featureLayerCollection.layers,
-                    *self._featureLayerCollection.tables,
-                ]:
-                    if layerId == feature.properties["id"]:
-                        dict[layerId] = LayerTable(feature).query(
-                            where=item["where"],
-                            outFields=item["outFields"],
-                        )
-                        break
-
-            return dict
+            return result
 
         else:
             response: Response = post(
