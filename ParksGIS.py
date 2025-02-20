@@ -173,7 +173,7 @@ class Server:
     def extract_changes(
         self,
         layer_servergen: list[LayerServerGen],
-        layer_query: list[LayerQuery],
+        layer_query: list[LayerQuery] | None = None,
         inserts: bool = True,
         updates: bool = True,
         deletes: bool = False,
@@ -182,10 +182,14 @@ class Server:
         changes = self._featureLayerCollection.extract_changes(
             layers=[layer.id for layer in layer_servergen],
             layer_servergen=[layer.__dict__ for layer in layer_servergen],
-            queries={
-                str(layer.layerId): {"where": layer.where}
-                for _, layer in enumerate(layer_query)
-            },
+            queries=(
+                None
+                if layer_query is None
+                else {
+                    str(layer.layerId): {"where": layer.where}
+                    for _, layer in enumerate(layer_query)
+                }
+            ),
             return_inserts=inserts,
             return_updates=updates,
             return_deletes=deletes,
