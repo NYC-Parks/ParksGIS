@@ -77,7 +77,7 @@ class LayerDomainNames:
 
 class LayerServerGen:
     id: int
-    serverGen: int  # EPOCH time to start from in milliseconds
+    serverGen: int  # EPOCH
 
     def __init__(
         self,
@@ -85,7 +85,7 @@ class LayerServerGen:
         serverGen: int,
     ) -> None:
         self.id = id
-        self.serverGen = serverGen * 1000
+        self.serverGen = serverGen
 
 
 class Server:
@@ -481,6 +481,7 @@ class GISFactory:
 
         elif isinstance(id_url, str):
             urlParts = parse.urlparse(id_url, "https")
+            type = "Feature Layer Collection"
 
             if urlParts.netloc == "":
                 raise Exception("Invalid URL")
@@ -488,29 +489,31 @@ class GISFactory:
             path = urlParts.path.split("/")
             title = path[-3 if path[-1].isdigit() else -2]
 
-            collection = self._gis.content.search(
-                query=title,
-                item_type="Feature Layer Collection",
+            collections = self._gis.content.search(
+                query=f'title:"{title}"',
+                item_type=type,
             )
-            filtered = filter(lambda i: i.title == title, collection)
-            collection = list(filtered)
+            filtered_collections = list(
+                filter(lambda layer: layer.title == title, collections)
+            )
 
-            if len(collection) > 1:
-                raise Exception("More than one Feature Layer Collection found.")
+            length = len(filtered_collections)
+            if length == 0 | 1 < length:
+                raise Exception(f"{type} not found.")
 
             if path[-1].isdigit():
-                for layer in collection[0].layers:
+                for layer in filtered_collections[0].layers:
                     if layer.url[-1] == urlParts.path[-1]:
                         return LayerTable(layer)
 
-                for table in collection[0].tables:
+                for table in filtered_collections[0].tables:
                     if table.url[-1] == urlParts.path[-1]:
                         return LayerTable(table)
 
             else:
                 return Server(
                     self._gis._con.token,  # type: ignore
-                    collection[0],
+                    filtered_collections[0],
                 )
 
         else:
