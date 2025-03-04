@@ -89,15 +89,18 @@ class LayerServerGen:
 
 
 class Server:
-    _featureLayerCollection: FeatureLayerCollection
     _token: str
+    _verify_cert: bool
+    _featureLayerCollection: FeatureLayerCollection
 
     def __init__(
         self,
         token: str,
+        verify_cert: bool,
         collection_or_item: FeatureLayerCollection | Item,
     ) -> None:
         self._token = token
+        self._verify_cert = verify_cert
         if isinstance(collection_or_item, FeatureLayerCollection):
             self._featureLayerCollection = collection_or_item
         else:
@@ -166,7 +169,9 @@ class Server:
                 "f": "json",
                 "token": self._token,
             },
+            verify=self._verify_cert,
         )
+        # print(response)
 
         return list(self.__response_handler(response))
 
@@ -283,6 +288,7 @@ class Server:
                     "f": "json",
                     "token": self._token,
                 },
+                verify=self._verify_cert,
             )
 
             return self.__response_handler(response)
@@ -301,12 +307,12 @@ class Server:
         domainNameSet = {name for layer in layer_domain_names for name in layer.names}
         return [domain for domain in layerDomains if domain["name"] in domainNameSet]
 
-    def __response_handler(self, response: Response) -> dict[Any, Any] | list:
+    def __response_handler(self, response: Response) -> dict | list:
         result = response.json()
         if not response.ok:
             raise Exception(result)
 
-        if result.get("error") is not None:
+        if result is dict and result.get("error") is not None:
             raise Exception(result)
 
         return result
@@ -449,6 +455,7 @@ class LayerTable:
 
 class GISFactory:
     _gis: GIS
+    _verify_cert: bool
 
     def __init__(
         self,
@@ -457,6 +464,7 @@ class GISFactory:
         password: Optional[str] = None,
         verify_cert: bool = True,
     ) -> None:
+        self._verify_cert = verify_cert
         self._gis = GIS(url, username, password, verify_cert=verify_cert)
 
     def feature_server(self, url: str) -> Server:
@@ -513,6 +521,7 @@ class GISFactory:
             else:
                 return Server(
                     self._gis._con.token,  # type: ignore
+                    self._verify_cert,
                     filtered_collections[0],
                 )
 
