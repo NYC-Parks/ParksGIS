@@ -128,7 +128,7 @@ class Server:
                             )
                         ).append(item.features)
 
-    # ApplyEdits is missing from API
+    # apply_edits is missing from API
     def apply_edits(
         self,
         layer_edits: list[LayerEdits],
@@ -177,7 +177,7 @@ class Server:
 
     def extract_changes(
         self,
-        layer_servergen: list[LayerServerGen],
+        layer_server_gen: list[LayerServerGen],
         layer_query: list[LayerQuery] | None = None,
         inserts: bool = True,
         updates: bool = True,
@@ -185,8 +185,8 @@ class Server:
         return_ids_only: bool = True,
     ):
         changes = self._featureLayerCollection.extract_changes(
-            layers=[layer.id for layer in layer_servergen],
-            layer_servergen=[layer.__dict__ for layer in layer_servergen],
+            layers=[layer.id for layer in layer_server_gen],
+            layer_servergen=[layer.__dict__ for layer in layer_server_gen],
             queries=(
                 None
                 if layer_query is None
@@ -251,6 +251,8 @@ class Server:
 
         if as_df:
             self._featureLayerCollection._populate_layers()
+            result = {}
+
             features = {
                 feature.properties["id"]: feature
                 for _, feature in enumerate(
@@ -258,7 +260,6 @@ class Server:
                     + self._featureLayerCollection.tables
                 )
             }
-            result = {}
 
             for layer in layerDefinitions:
                 feature = features[layer.layerId]
@@ -309,10 +310,8 @@ class Server:
 
     def __response_handler(self, response: Response) -> dict | list:
         result = response.json()
-        if not response.ok:
-            raise Exception(result)
 
-        if result is dict and result.get("error") is not None:
+        if not response.ok or (isinstance(result, dict) and "error" in result):
             raise Exception(result)
 
         return result
