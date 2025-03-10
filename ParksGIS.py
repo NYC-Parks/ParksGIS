@@ -155,7 +155,6 @@ class Server:
                     for item in dict["updates"].itertuples(index=False)
                 ]
             edits.append(dict)
-        # print(edits)
 
         response: Response = post(
             self._featureLayerCollection.url + "/applyEdits",
@@ -171,7 +170,6 @@ class Server:
             },
             verify=self._verify_cert,
         )
-        # print(response)
 
         return list(self.__response_handler(response))
 
@@ -247,7 +245,6 @@ class Server:
         as_df: bool = True,
     ) -> dict[int, DataFrame]:
         layerDefs = [layer.__dict__ for layer in layerDefinitions]
-        # print(layerDefs)
 
         if as_df:
             self._featureLayerCollection._populate_layers()
