@@ -6,7 +6,9 @@ from arcgis.features import (
 )
 from arcgis.geometry import SpatialReference
 from arcgis.gis import GIS, Item
+from itertools import chain
 from json import dumps, loads
+from logging import getLogger
 from numpy import ndarray
 from pandas import DataFrame, Series, concat, json_normalize
 from requests import Response, post
@@ -15,6 +17,7 @@ from urllib import parse
 from uuid import UUID
 
 spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
+gis_logger = getLogger("[ park_gis ]")
 
 
 class LayerAppend:
@@ -244,17 +247,15 @@ class Server:
         returnM: bool = False,
         as_df: bool = True,
     ) -> dict[int, DataFrame]:
-        layerDefs = [layer.__dict__ for layer in layerDefinitions]
-
         if as_df:
             self._featureLayerCollection._populate_layers()
             result = {}
 
             features = {
                 feature.properties["id"]: feature
-                for _, feature in enumerate(
-                    self._featureLayerCollection.layers
-                    + self._featureLayerCollection.tables
+                for feature in chain(
+                    self._featureLayerCollection.layers,
+                    self._featureLayerCollection.tables,
                 )
             }
 
@@ -271,7 +272,7 @@ class Server:
             response: Response = post(
                 self._featureLayerCollection.url + "/query",
                 {
-                    "layerDefs": dumps(layerDefs),
+                    "layerDefs": dumps([layer.__dict__ for layer in layerDefinitions]),
                     "geometry": geometry,
                     "geometryType": geometryType,
                     "spatialRel": spatialRelationship,
