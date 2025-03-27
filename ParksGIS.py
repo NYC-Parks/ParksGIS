@@ -8,7 +8,7 @@ from arcgis.geometry import SpatialReference
 from arcgis.gis import GIS, Item
 from itertools import chain
 from json import dumps, loads
-from logging import getLogger
+from logging import Logger, getLogger
 from numpy import ndarray
 from pandas import DataFrame, Series, concat, json_normalize
 from requests import Response, post
@@ -17,7 +17,17 @@ from urllib import parse
 from uuid import UUID
 
 spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
-gis_logger = getLogger("[ park_gis ]")
+gis_logger: Logger = getLogger("[ parks_gis ]")
+
+
+def log_sql(
+    logger: Logger,
+    layer: int,
+    where: str,
+    fields: list[str],
+) -> None:
+    template = f"\n\tSelect {fields}\n\tFrom Layer-{layer}\n\tWhere {where}"
+    logger.debug(template)
 
 
 class LayerAppend:
@@ -247,6 +257,14 @@ class Server:
         returnM: bool = False,
         as_df: bool = True,
     ) -> dict[int, DataFrame]:
+        for layer in layerDefinitions:
+            log_sql(
+                gis_logger,
+                layer.layerId,
+                layer.where,
+                layer.outFields.split(","),
+            )
+
         if as_df:
             self._featureLayerCollection._populate_layers()
             result = {}
@@ -378,6 +396,12 @@ class LayerTable:
         return_geometry=False,
         as_df=True,
     ):
+        log_sql(
+            gis_logger,
+            self._feature.properties["id"],
+            where,
+            outFields if isinstance(outFields, list) else outFields.split(","),
+        )
 
         if geometry is not None:
             if list(geometry.keys()).count("points") != 0:
