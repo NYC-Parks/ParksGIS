@@ -17,7 +17,6 @@ from urllib import parse
 from uuid import UUID
 
 spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
-gis_logger: Logger = getLogger("[ parks_gis ]")
 
 
 def log_sql(
@@ -103,6 +102,7 @@ class LayerServerGen:
 
 class Server:
     _token: str
+    _logger: Logger
     _verify_cert: bool
     _featureLayerCollection: FeatureLayerCollection
 
@@ -111,8 +111,10 @@ class Server:
         token: str,
         verify_cert: bool,
         collection_or_item: FeatureLayerCollection | Item,
+        logger: Logger,
     ) -> None:
         self._token = token
+        self._logger = logger
         self._verify_cert = verify_cert
         if isinstance(collection_or_item, FeatureLayerCollection):
             self._featureLayerCollection = collection_or_item
@@ -129,7 +131,8 @@ class Server:
                         FeatureLayer(
                             self._featureLayerCollection.url + "/" + str(item.id),
                             self._featureLayerCollection._gis,
-                        )
+                        ),
+                        self._logger,
                     ).append(item.features)
             for table in self._featureLayerCollection.properties.tables:
                 if table in self._featureLayerCollection.properties.tables:
@@ -138,7 +141,8 @@ class Server:
                             Table(
                                 self._featureLayerCollection.url + "/" + str(item.id),
                                 self._featureLayerCollection._gis,
-                            )
+                            ),
+                            self._logger,
                         ).append(item.features)
 
     # apply_edits is missing from API
@@ -154,25 +158,10 @@ class Server:
             "originalAndCurrentFeatures",
         ] = "none",
     ) -> list[str]:
-        edits = []
-        for edit in layer_edits:
-            dict = edit.__dict__
-            if "adds" in dict:
-                dict["adds"] = [
-                    {"attributes": item._asdict()}
-                    for item in dict["adds"].itertuples(index=False)
-                ]
-            if "updates" in dict:
-                dict["updates"] = [
-                    {"attributes": item._asdict()}
-                    for item in dict["updates"].itertuples(index=False)
-                ]
-            edits.append(dict)
-
         response: Response = post(
             self._featureLayerCollection.url + "/applyEdits",
             {
-                "edits": dumps(edits),
+                "edits": dumps(self._to_attributes(layer_edits)),
                 "gdbVersion": gdbVersion,
                 "rollbackOnFailure": rollbackOnFailure,
                 "useGlobalIds": useGlobalIds,
@@ -185,6 +174,21 @@ class Server:
         )
 
         return list(self.__response_handler(response))
+
+    def _to_attributes(self, layer_edits: list[LayerEdits]) -> list[dict[str, Any]]:
+        edits = []
+
+        for edit in layer_edits:
+            dict = edit.__dict__
+            for key in dict.keys():
+                if key in ["adds", "updates"]:
+                    dict[key] = [
+                        {"attributes": row.__dict__} for _, row in dict[key].iterrows()
+                    ]
+            edits.append(dict)
+
+        self._logger.debug(edits)
+        return edits
 
     def extract_changes(
         self,
@@ -259,7 +263,7 @@ class Server:
     ) -> dict[int, DataFrame]:
         for layer in layerDefinitions:
             log_sql(
-                gis_logger,
+                self._logger,
                 layer.layerId,
                 layer.where,
                 layer.outFields.split(","),
@@ -279,7 +283,10 @@ class Server:
 
             for layer in layerDefinitions:
                 feature = features[layer.layerId]
-                result[layer.layerId] = LayerTable(feature).query(
+                result[layer.layerId] = LayerTable(
+                    feature,
+                    self._logger,
+                ).query(
                     where=layer.where,
                     outFields=layer.outFields,
                 )
@@ -334,12 +341,15 @@ class Server:
 
 
 class LayerTable:
+    _logger: Logger
     _feature: FeatureLayer | Table
 
     def __init__(
         self,
         feature: FeatureLayer | Table,
+        logger: Logger,
     ) -> None:
+        self._logger = logger
         self._feature = feature
 
     def append(
@@ -397,7 +407,7 @@ class LayerTable:
         as_df=True,
     ):
         log_sql(
-            gis_logger,
+            self._logger,
             self._feature.properties["id"],
             where,
             outFields if isinstance(outFields, list) else outFields.split(","),
@@ -429,38 +439,39 @@ class LayerTable:
         # workaround for querying Table as_df
         return result.sdf if as_df else result
 
-    def add(self, data: DataFrame | str):
+    def add(self, data: DataFrame):
         return self.__edit_features(data, "add")
 
-    def delete(self, data: DataFrame | str):
+    def delete(self, data: DataFrame):
         return self.__edit_features(data, "delete")
 
-    def update(self, data: DataFrame | str):
+    def update(self, data: DataFrame):
         return self.__edit_features(data, "update")
 
     def __edit_features(
         self,
-        data: DataFrame | str,
+        data: DataFrame,
         operation: Literal["add", "update", "delete"],
     ):
-        if isinstance(data, DataFrame):
-            featureSet = FeatureSet.from_dataframe(data)
-        else:
-            featureSet = FeatureSet.from_json(data)
+        # if isinstance(data, DataFrame):
+        featureSet = FeatureSet.from_dataframe(data)
+        # else:
+        #     featureSet = FeatureSet.from_json(data)
 
         # hints are wrong. Should be FeatureSet not list[FeatureSet]
         # https://developers.arcgis.com/python/api-reference/arcgis.features.toc.html#arcgis.features.FeatureLayer.edit_features
-        if operation == "add":
-            result = self._feature.edit_features(adds=featureSet)  # type: ignore
-        elif operation == "delete":
-            result = self._feature.edit_features(deletes=featureSet)  # type: ignore
-        elif operation == "update":
-            result = self._feature.edit_features(updates=featureSet)  # type: ignore
-        else:
-            raise Exception(f"Operation {operation} not supported.")
+        match operation:
+            case "add":
+                result = self._feature.edit_features(adds=featureSet)  # type: ignore
+            case "delete":
+                result = self._feature.edit_features(deletes=featureSet)  # type: ignore
+            case "update":
+                result = self._feature.edit_features(updates=featureSet)  # type: ignore
+            case _:
+                raise Exception(f"Operation {operation} not supported.")
 
-        if isinstance(data, str):
-            data = DF_Util.createFromList(loads(data))
+        # if isinstance(data, str):
+        #     data = DF_Util.createFromList(loads(data))
 
         if isinstance(result, dict):
             return concat(
@@ -477,6 +488,7 @@ class LayerTable:
 class GISFactory:
     _gis: GIS
     _verify_cert: bool
+    _logger = getLogger("[ parks_gis ]")
 
     def __init__(
         self,
@@ -492,13 +504,20 @@ class GISFactory:
         return Server(
             self._gis._con.token,  # type: ignore
             FeatureLayerCollection(url, self._gis),
+            self._logger,
         )
 
     def feature_layer(self, url: str) -> LayerTable:
-        return LayerTable(FeatureLayer(url, self._gis))
+        return LayerTable(
+            FeatureLayer(url, self._gis),
+            self._logger,
+        )
 
     def feature_table(self, url: str) -> LayerTable:
-        return LayerTable(Table(url, self._gis))
+        return LayerTable(
+            Table(url, self._gis),
+            self._logger,
+        )
 
     def create_feature(
         self,
@@ -506,7 +525,10 @@ class GISFactory:
         layer: Optional[int] = None,
     ) -> LayerTable | Server | Any:
         if isinstance(id_url, UUID) and layer is not None:
-            return LayerTable(self._gis.content.get(id_url.hex).layers[layer])
+            return LayerTable(
+                self._gis.content.get(id_url.hex).layers[layer],
+                self._logger,
+            )
 
         elif isinstance(id_url, str):
             urlParts = parse.urlparse(id_url, "https")
@@ -533,17 +555,18 @@ class GISFactory:
             if path[-1].isdigit():
                 for layer in filtered_collections[0].layers:
                     if layer.url[-1] == urlParts.path[-1]:
-                        return LayerTable(layer)
+                        return LayerTable(layer, self._logger)
 
                 for table in filtered_collections[0].tables:
                     if table.url[-1] == urlParts.path[-1]:
-                        return LayerTable(table)
+                        return LayerTable(table, self._logger)
 
             else:
                 return Server(
                     self._gis._con.token,  # type: ignore
                     self._verify_cert,
                     filtered_collections[0],
+                    self._logger,
                 )
 
         else:
