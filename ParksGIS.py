@@ -532,14 +532,13 @@ class GISFactory:
 
         elif isinstance(id_url, str):
             urlParts = parse.urlparse(id_url, "https")
-            type = "Feature Layer Collection"
-
             if urlParts.netloc == "":
                 raise Exception("Invalid URL")
 
             path = urlParts.path.split("/")
             title = path[-3 if path[-1].isdigit() else -2]
 
+            type = "Feature Layer Collection"
             collections = self._gis.content.search(
                 query=f'title:"{title}"',
                 item_type=type,
@@ -549,8 +548,8 @@ class GISFactory:
             )
 
             length = len(filtered_collections)
-            if length == 0 | 1 < length:
-                raise Exception(f"{type} not found.")
+            if length == 0 or length > 1:
+                raise Exception(f"{title} not found.")
 
             if path[-1].isdigit():
                 for layer in filtered_collections[0].layers:
