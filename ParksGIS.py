@@ -183,7 +183,7 @@ class Server:
             for key in dict.keys():
                 if key in ["adds", "updates"]:
                     dict[key] = [
-                        {"attributes": row.__dict__} for _, row in dict[key].iterrows()
+                        {"attributes": row._asdict()} for row in dict[key].itertuples()
                     ]
             edits.append(dict)
 
