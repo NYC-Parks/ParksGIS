@@ -7,7 +7,7 @@ from arcgis.features import (
 from arcgis.geometry import SpatialReference
 from arcgis.gis import GIS, Item
 from itertools import chain
-from json import dumps, loads
+from json import dumps
 from logging import Logger, getLogger
 from numpy import ndarray
 from pandas import DataFrame, Series, concat, json_normalize
@@ -127,7 +127,7 @@ class Server:
         for item in layer_appends:
             for layer in self._featureLayerCollection.properties.layers:
                 if layer.id == item.id:
-                    LayerTable(
+                    Feature(
                         FeatureLayer(
                             self._featureLayerCollection.url + "/" + str(item.id),
                             self._featureLayerCollection._gis,
@@ -137,7 +137,7 @@ class Server:
             for table in self._featureLayerCollection.properties.tables:
                 if table in self._featureLayerCollection.properties.tables:
                     if table.id == item.id:
-                        LayerTable(
+                        Feature(
                             Table(
                                 self._featureLayerCollection.url + "/" + str(item.id),
                                 self._featureLayerCollection._gis,
@@ -218,8 +218,8 @@ class Server:
 
         if return_ids_only:
             return changes
-
-        raise Exception("Not Implemented")
+        else:
+            raise Exception("Not Implemented")
 
     # There is a bug in argcis.features.FeatureLayerCollection.query()
     # LayerDefinitionFilter is not being added to query param
@@ -283,7 +283,7 @@ class Server:
 
             for layer in layerDefinitions:
                 feature = features[layer.layerId]
-                result[layer.layerId] = LayerTable(
+                result[layer.layerId] = Feature(
                     feature,
                     self._logger,
                 ).query(
@@ -340,7 +340,7 @@ class Server:
         return result
 
 
-class LayerTable:
+class Feature:
     _logger: Logger
     _feature: FeatureLayer | Table
 
@@ -488,6 +488,7 @@ class LayerTable:
 class GISFactory:
     _gis: GIS
     _verify_cert: bool
+    _services_base_url: str
     _logger = getLogger("[ parks_gis ]")
 
     def __init__(
@@ -499,74 +500,84 @@ class GISFactory:
     ) -> None:
         self._verify_cert = verify_cert
         self._gis = GIS(url, username, password, verify_cert=verify_cert)
-
-    def feature_server(self, url: str) -> Server:
-        return Server(
-            self._gis._con.token,  # type: ignore
-            FeatureLayerCollection(url, self._gis),
-            self._logger,
+        self._services_base_url = (
+            self._get_base_url(self._gis.url if url is None else url)
+            + "/server/rest/services"
         )
 
-    def feature_layer(self, url: str) -> LayerTable:
-        return LayerTable(
-            FeatureLayer(url, self._gis),
-            self._logger,
-        )
+    def _get_base_url(self, url: str) -> str:
+        parsed_url = parse.urlparse(url, "https")
+        if parsed_url.netloc == "":
+            raise Exception("Invalid URL")
 
-    def feature_table(self, url: str) -> LayerTable:
-        return LayerTable(
-            Table(url, self._gis),
-            self._logger,
-        )
+        return f"{parsed_url.scheme}://{parsed_url.netloc}"
 
-    def create_feature(
+    def create(
         self,
-        id_url: str | UUID,
+        id_path: str | UUID,
         layer: Optional[int] = None,
-    ) -> LayerTable | Server | Any:
-        if isinstance(id_url, UUID) and layer is not None:
-            return LayerTable(
-                self._gis.content.get(id_url.hex).layers[layer],
+    ) -> Feature | Server | Any:
+        if isinstance(id_path, UUID) and layer is not None:
+            return Feature(
+                self._gis.content.get(id_path.hex).layers[layer],
                 self._logger,
             )
 
-        elif isinstance(id_url, str):
-            urlParts = parse.urlparse(id_url, "https")
-            if urlParts.netloc == "":
-                raise Exception("Invalid URL")
+        elif isinstance(id_path, str):
+            path_parts = id_path.split("/")
+            collection = self._get_feature_layer_collection(title=path_parts[1])
 
-            path = urlParts.path.split("/")
-            title = path[-3 if path[-1].isdigit() else -2]
-
-            type = "Feature Layer Collection"
-            collections = self._gis.content.search(
-                query=f'title:"{title}"',
-                item_type=type,
-            )
-            filtered_collections = list(
-                filter(lambda layer: layer.title == title, collections)
-            )
-
-            length = len(filtered_collections)
-            if length == 0 or length > 1:
-                raise Exception(f"{title} not found.")
-
-            if path[-1].isdigit():
-                for layer in filtered_collections[0].layers:
-                    if layer.url[-1] == urlParts.path[-1]:
-                        return LayerTable(layer, self._logger)
-
-                for table in filtered_collections[0].tables:
-                    if table.url[-1] == urlParts.path[-1]:
-                        return LayerTable(table, self._logger)
-
+            if path_parts[-1].isdigit():
+                feature = self._get_feature(path_parts[2], collection)
+                return Feature(feature, self._logger)
             else:
                 return Server(
                     self._gis._con.token,  # type: ignore
                     self._verify_cert,
-                    filtered_collections[0],
+                    collection,
                     self._logger,
                 )
 
         else:
-            raise Exception(f"Unsupported id_url: {str(id_url)}, or missing layer")
+            raise Exception(f"Unsupported id_url: {str(id_path)}, or missing layer")
+
+    def _get_feature_layer_collection(self, title: str) -> FeatureLayerCollection:
+        search_result = self._gis.content.search(
+            query=f'title:"{title}"',
+            item_type="Feature Layer Collection",
+        )
+
+        collections = list(filter(lambda layer: layer.title == title, search_result))
+
+        if len(collections) == 0 or 1 < len(collections):
+            raise Exception(f"{title} not found.")
+
+        return collections[0]
+
+    def _get_feature(self, feature: str, collection: FeatureLayerCollection) -> Any:
+        for layer in collection.layers:
+            if layer.url[-1] == feature:
+                return layer
+
+        for table in collection.tables:
+            if table.url[-1] == feature:
+                return table
+
+    def feature_server(self, path: str) -> Server:
+        return Server(
+            self._gis._con.token,  # type: ignore
+            FeatureLayerCollection(self._services_base_url + path, self._gis),
+            self._logger,
+        )
+
+    def feature_layer(self, path: str) -> Feature:
+        return Feature(
+            FeatureLayer(self._services_base_url + path, self._gis),
+            self._logger,
+        )
+
+    def feature_table(self, path: str) -> Feature:
+        return Feature(
+            Table(self._services_base_url + path, self._gis),
+            self._logger,
+        )

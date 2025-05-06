@@ -1,7 +1,7 @@
 from .ParksGIS import (
     GISFactory,
     Server,
-    LayerTable,
+    Feature,
     LayerAppend,
     LayerEdits,
     LayerQuery,
@@ -12,7 +12,7 @@ from .ParksGIS import (
 __all__ = [
     'GISFactory',
     'Server',
-    'LayerTable',
+    'Feature',
     'LayerAppend',
     'LayerEdits', 
     'LayerQuery',
