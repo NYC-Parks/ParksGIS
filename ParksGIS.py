@@ -22,10 +22,13 @@ spatialRef = SpatialReference({"wkid": 102718, "latestWkid": 2263})
 def log_sql(
     logger: Logger,
     layer: int,
-    where: str,
     fields: list[str],
+    where: str,
+    object_ids: Optional[str] = None,
 ) -> None:
     template = f"\n\tSelect {fields}\n\tFrom Layer-{layer}\n\tWhere {where}"
+    if object_ids:
+        template = template + f"\n\tObject IDs: {object_ids}"
     logger.debug(template)
 
 
@@ -60,18 +63,21 @@ class LayerEdits:
 
 class LayerQuery:
     layerId: int
-    outFields: str
     where: str
+    object_ids: Optional[str] = None
+    outFields: str
 
     def __init__(
         self,
         id: int,
         fields: list[str] = ["OBJECTID"],
         where: str = "1=1",
+        object_ids: Optional[str] = None,
     ) -> None:
         self.layerId = id
-        self.outFields = ",".join(fields)
         self.where = where
+        self.object_ids = object_ids
+        self.outFields = ",".join(fields)
 
 
 class LayerDomainNames:
@@ -265,8 +271,9 @@ class Server:
             log_sql(
                 self._logger,
                 layer.layerId,
-                layer.where,
                 layer.outFields.split(","),
+                layer.where,
+                layer.object_ids,
             )
 
         if as_df:
@@ -288,7 +295,8 @@ class Server:
                     self._logger,
                 ).query(
                     where=layer.where,
-                    outFields=layer.outFields,
+                    object_ids=layer.object_ids,
+                    out_fields=layer.outFields,
                 )
 
             return result
@@ -358,9 +366,7 @@ class Feature:
     ):
         exists = {
             self.query(
-                where="OBJECTID IN ("
-                + ",".join(feature["ObjectID"] for feature in featutes)
-                + ")",
+                object_ids=",".join(feature["ObjectID"] for feature in featutes)
                 # as_df=False,
             )["OBJECTID"]
         }
@@ -372,8 +378,9 @@ class Feature:
 
     def query(
         self,
-        outFields: str | list[str] = "OBJECTID",
+        out_fields: str | list[str] = "OBJECTID",
         where: str = "1=1",
+        object_ids: Optional[str] = None,
         geometry: (
             dict[
                 Literal["x", "y"],
@@ -410,7 +417,7 @@ class Feature:
             self._logger,
             self._feature.properties["id"],
             where,
-            outFields if isinstance(outFields, list) else outFields.split(","),
+            out_fields if isinstance(out_fields, list) else out_fields.split(","),
         )
 
         if geometry is not None:
@@ -425,13 +432,14 @@ class Feature:
             geometry["geometryType"] = geometryType  # type: ignore
             geometry["spatialRel"] = spatialRel  # type: ignore
 
-        if isinstance(outFields, list):
-            out_fields = ",".join(outFields)  # type: ignore
+        if isinstance(out_fields, list):
+            out_fields = ",".join(out_fields)  # type: ignore
         else:
-            out_fields = outFields
+            out_fields = out_fields
 
         result = self._feature.query(
             where=where,
+            object_ids=object_ids,  # type: ignore *type definition and implementation mismatch*
             out_fields=out_fields,
             geometry_filter=geometry,  # type: ignore
             return_geometry=return_geometry,
