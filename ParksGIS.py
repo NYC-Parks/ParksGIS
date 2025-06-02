@@ -416,8 +416,9 @@ class Feature:
         log_sql(
             self._logger,
             self._feature.properties["id"],
-            where,
             out_fields if isinstance(out_fields, list) else out_fields.split(","),
+            where,
+            object_ids,
         )
 
         if geometry is not None:
