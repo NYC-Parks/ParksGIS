@@ -10,7 +10,7 @@ from itertools import chain
 from json import dumps
 from logging import Logger, getLogger
 from numpy import ndarray
-from pandas import DataFrame, Series, concat, json_normalize
+from pandas import DataFrame, Series, concat, isna, json_normalize
 from requests import Response, post
 from typing import Any, Literal, Optional
 from urllib import parse
@@ -49,8 +49,8 @@ class LayerEdits:
     def __init__(
         self,
         id: int,
-        adds: DataFrame | Series | list[str] | None = None,
-        updates: DataFrame | Series | list[str] | None = None,
+        adds: DataFrame | Series | list[dict] | None = None,
+        updates: DataFrame | Series | list[dict] | None = None,
     ):
         self.id = id
         if adds is not None:
@@ -189,12 +189,21 @@ class Server:
             for key in dict.keys():
                 if key in ["adds", "updates"]:
                     dict[key] = [
-                        {"attributes": row._asdict()} for row in dict[key].itertuples()
+                        {"attributes": row._asdict()}
+                        for row in self._convert_date_to_epoch(dict[key]).itertuples()
                     ]
             edits.append(dict)
 
         self._logger.debug(edits)
         return edits
+
+    def _convert_date_to_epoch(self, data: DataFrame) -> DataFrame:
+        datetime_cols = data.select_dtypes(include=["datetime64[ns]"]).columns
+
+        for col in datetime_cols:
+            data[col] = data[col].map(lambda x: None if isna(x) else x.value // 10**6)
+
+        return data
 
     def extract_changes(
         self,
